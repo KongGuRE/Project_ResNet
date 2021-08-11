@@ -4,22 +4,25 @@
 # Some part of the code was referenced from below                              #
 # https://github.com/pytorch/vision/blob/master/torchvision/models/resnet.py   #
 # ---------------------------------------------------------------------------- #
-from tqdm import tqdm, trange
-import torch
-import numpy as np
-from logging.config import dictConfig
-import logging
-import torch.nn.functional as F
-import torch.nn as nn
-from typing import Type, Any, Callable, Union, List, Optional
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms, utils
-import os
 import datetime
-import random
-import matplotlib.pyplot as plt
 import glob
-from PIL import Image, ImageFile
+import logging
+import os
+import random
+from logging.config import dictConfig
+from typing import Type, Union, List
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from PIL import Image
+
+import torchvision.models as models
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
+from tqdm import tqdm
 
 dictConfig({
     'version': 1,
@@ -46,7 +49,7 @@ dictConfig({
 def label_files(files):
     labels = []
     for file in files:
-        if '\\NG_Crack\\' in file:
+        if '\\NG\\' in file:
             labels.append(0)
         else:
             labels.append(1)
@@ -215,8 +218,8 @@ class ResNet(nn.Module):
         features = self.layer2(features)
         features = self.layer3(features)
         features = self.layer4(features)
-
-        out = F.avg_pool2d(features, 32)
+        # print(features.shape)
+        out = F.avg_pool2d(features, 28)
         out = out.view(out.size(0), -1)
         out = self.linear(out)
         return out, features
@@ -232,6 +235,11 @@ def update_lr(optimizer, lr):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
+def fifo_numpy_1D(fifo_numpy_data, numpy_append_data):
+    fifo_numpy_data = np.delete(fifo_numpy_data, 0)
+    fifo_numpy_data = np.append(fifo_numpy_data, numpy_append_data)
+    return fifo_numpy_data
+
 
 if __name__ == '__main__':
 
@@ -243,11 +251,11 @@ if __name__ == '__main__':
     print(device)
     print(os.getcwd())
 
-    path = 'C:/DataSET/ImageData'
+    path = 'C:/DataSET/ImageData/P-TCP/P-TCP'
     os.listdir(path)
 
-    train_files = path + '/HTCC_Crack/HTCC_Crack/Train/'
-    test_files = path + '/HTCC_Crack/HTCC_Crack/Test/'
+    train_files = path + '/Train/'
+    test_files = path + '/Test/'
 
     train_files = glob.glob(train_files + '/*/*.jpg')
     test_files = glob.glob(test_files + '/*/*.jpg')
@@ -259,7 +267,6 @@ if __name__ == '__main__':
     train_labels = label_files(train_files)
     test_labels = label_files(test_files)
 
-
     # Image preprocessing modules
 
     torch.manual_seed(43)
@@ -268,35 +275,34 @@ if __name__ == '__main__':
     np.random.seed(43)
 
     # Hyper-parameters
-    num_epochs = 250
+    num_epochs = 100
     learning_rate = 0.001
-    batch_size = 4
+    batch_size = 1024
     test_batch_size = 1
-    img_size = 256
+    img_size = 64
+
+    # train_transforms = transforms.Compose([
+    #     transforms.Resize(img_size),
+    #     transforms.RandomHorizontalFlip(),
+    #     transforms.RandomVerticalFlip(),
+    #     transforms.RandomAffine(45),
+    #     transforms.ToTensor(),
+    #     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    # ])
+    # test_transforms = transforms.Compose([
+    #     transforms.Resize(img_size),
+    #     transforms.ToTensor(),
+    #     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    # ])
 
     train_transforms = transforms.Compose([
         transforms.Resize(img_size),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomVerticalFlip(),
-        transforms.RandomAffine(45),
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
     test_transforms = transforms.Compose([
         transforms.Resize(img_size),
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
-
-    # train_transforms = transforms.Compose([
-    #     transforms.Resize(img_size),
-    #     transforms.ToTensor(),
-    # ])
-    # test_transforms = transforms.Compose([
-    #     transforms.Resize(img_s
-    #     ize),
-    #     transforms.ToTensor(),
-    # ])
 
     # CustomDataset
     train_dataset = CustomDataset(train_files, train_labels, augmentation=train_transforms, valid=False)
@@ -332,83 +338,116 @@ if __name__ == '__main__':
         plt.imshow(im)
         plt.show()
 
-    import torchvision.models as models
-
     model = models.resnet18(pretrained=True)
     # model = ResNet(BasicBlock, [2, 2, 2, 2]).to(device)
     model.fc = nn.Linear(512, 2)
-
     model.to(device)
 
     # Loss and optimizer
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-    print('\n######### Train the model #########\n')
-    # Train the model
-    model.train()
-    total_step = len(train_loader)
-    curr_lr = learning_rate
+    test_acc = 0
+    _ck_test_model: str = ""
 
-    correct = 0
+    _acc_max = 0
+    _acc_max_count = 0
+    _loss_min = 1000000
+    _loss_min_count = 0
+
     total = 0
-    for epoch in tqdm(range(num_epochs)):
-        train_loss = 0
-        for i, data in enumerate(train_loader):
-            images, labels = data['img'].to(device), data['labels'].to(device)
+    correct = 0
 
-            # Forward pass
-            optimizer.zero_grad()
-            outputs = model(images)
+    while 1:
 
-            # Backward and optimize
+        print('\n######### Train the model #########\n')
+        # Train the model
+        model.train()
+        total_step = len(train_loader)
+        curr_lr = learning_rate
+        correct = 0
+        total = 0
 
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+        for epoch in tqdm(range(num_epochs)):
 
-            train_loss += loss.item()
-            _, predicted = outputs.max(1)
+            loss_train_epoch = 0
 
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
+            for i, data in enumerate(train_loader):
+                images, labels = data['img'].to(device), data['labels'].to(device)
 
-        print('\nTotal benign train accuracy: ', 100. * correct / total)
-        print('Total benign train loss: ', train_loss)
-        logging.debug("epoch" + "|" + str(epoch) + "|" + 'Total benign train accuracy: ' + "|" + str(
-            100. * correct / total) + "|" + 'Total benign train loss: ' + "|" + str(train_loss) + "|")
+                # Forward pass
+                optimizer.zero_grad()
+                outputs = model(images)
 
-        # with torch.no_grad():
-        #     for data in test_loader:
-        #         images, labels = data['img'].to(device), data['labels'].to(device)
-        #         outputs = model(images)
-        #         _, predicted = torch.max(outputs.data, 1)
-        #         total += labels.size(0)
-        #         correct += (predicted == labels).sum().item()
-        #
-        #     print("===================================================")
-        #     print('Accuracy of the model on the test images: {} %'.format(100 * correct / total))
-        #     logging.debug("*epoch" + "|" + str(epoch) + "|" +
-        #                   'Accuracy of the model on the test images: |' + str(100 * correct / total) + "|")
-        #     print("===================================================")
+                # Backward and optimize
 
-        # Save the model checkpoint
-        torch.save(model.state_dict(), r'.\ckpt\resnet' + str(epoch) + '.ckpt')
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
 
-        # Decay learning rate
-        # if (epoch + 1) % 25 == 0:
-        #     curr_lr /= 3
-        #     update_lr(optimizer, curr_lr)
+                loss_train_epoch += loss.item()
+                _, predicted = outputs.max(1)
 
-    # Test the model
-    model.eval()
+                total += labels.size(0)
+                correct += predicted.eq(labels).sum().item()
 
-    start = datetime.datetime.now()
-    end = datetime.datetime.now()
-    total_result = 0
-    total_result_2 = 0
-    Dj_time_c_t = 0
-    for a in range(1):
+            acc_train_epoch = 100. * correct / total
+            print('\nTotal benign train accuracy: ', acc_train_epoch)
+            print('Total benign train loss: ', loss_train_epoch)
+            logging.debug("*epoch" + "|" + str(epoch) + "|" + 'Total benign train accuracy: ' + "|" + str(
+                acc_train_epoch) + "|" + 'Total benign train loss: ' + "|" + str(loss_train_epoch) + "|")
+
+            # Save the model checkpoint
+            if _acc_max < acc_train_epoch:
+                _acc_max = acc_train_epoch
+                torch.save(model.state_dict(), r'.\ckpt\resnet' + str(epoch) + '.ckpt')
+                logging.debug("Max accuracy .ckpt: " + str(epoch) + '.ckpt')
+
+            elif acc_train_epoch == 100:
+                _acc_max_count += 1
+                _acc_max = acc_train_epoch
+                torch.save(model.state_dict(), r'.\ckpt\resnet' + str(epoch) + '.ckpt')
+                logging.debug("Max accuracy .ckpt: " + str(epoch) + '.ckpt')
+                if _acc_max_count > 5:
+                    if loss_train_epoch < 0.2:
+                        _ck_test_model = "Max accuracy .ckpt: " + str(epoch) + '.ckpt'
+                        break
+            else:
+                _acc_max_count = 0
+
+            # Decay learning rate
+            if _loss_min > loss_train_epoch:
+                _loss_min = loss_train_epoch
+                _loss_min_count = 0
+
+            else:
+                print("\nloss_min: ", _loss_min)
+                print("loss_min_count: ", _loss_min_count)
+                _loss_min_count += 1
+                if acc_train_epoch > 90:
+                    if _loss_min_count >= 20:
+                        _loss_min_count = -5
+                        curr_lr /= 3
+                        update_lr(optimizer, curr_lr)
+                        print("\nchange lr = ", curr_lr)
+
+                # if epoch < 20:
+                #     if _loss_min_count >= 10:
+                #         _loss_min_count = -5
+                #         curr_lr /= 3
+                #         update_lr(optimizer, curr_lr)
+                #         print("\nchange lr = ", curr_lr)
+                #
+                # elif epoch > 20:
+                #     if _loss_min_count >= 5:
+                #         _loss_min_count = -5
+                #         curr_lr /= 3
+                #         update_lr(optimizer, curr_lr)
+                #         print("\nchange lr = ", curr_lr)
+
+        # Test the model
+        model.eval()
+        total_result = 0
         with torch.no_grad():
             correct = 0
             total = 0
@@ -426,24 +465,26 @@ if __name__ == '__main__':
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
 
-                logging.debug('time ' + str(result))
+            test_acc = 100 * correct / total
 
-            logging.debug("===================================================")
             print("===================================================")
             print('one time : ', result, end='\n')
             print('one time microseconds : ', result.microseconds, end='\n')
             print("total time : ", total_result)
             print('AVG time : ', total_result / Dj_time_c)
-            print('Accuracy of the model on the test images: {} %'.format(100 * correct / total))
+            print('Accuracy of the model on the test images: {} %'.format(test_acc))
             print("===================================================")
 
-        total_result_2 = (total_result + total_result_2)
-        Dj_time_c_t = Dj_time_c_t + Dj_time_c
-        total_result = 0
+            logging.debug("**Test result -- " + "test_model |" + _ck_test_model + "|" +
+                          "one time |" + str(result) + "|" +
+                          "one time microseconds |" + str(result.microseconds) + "|" +
+                          "total time |" + str(total_result) + "|" +
+                          "AVG time |" + str(total_result / Dj_time_c) + "|" +
+                          "'Accuracy of the model on the test images |" + str(test_acc) + "|")
 
-        # Save the model checkpoint
-        torch.save(model.state_dict(), 'resnet' + str(epoch) + '.ckpt')
+        _loss_min_count = 30
+        _acc_max_count = -10
 
-    print('10 times ev times: ', total_result_2)
-    print('AVG time 10 times ev: ', total_result_2 / 10)
-    print('1 data AVG time 10 times ev : ', total_result_2 / Dj_time_c_t)
+        if test_acc == 100:
+            print("Test Acc 100% epoch")
+            break
