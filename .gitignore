@@ -9,6 +9,7 @@ __pycache__/
 # Distribution / packaging
 .Python
 
+*.ckpt
 정리/
 build/
 develop-eggs/
