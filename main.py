@@ -47,25 +47,25 @@ dictConfig({
 
 
 def label_files(files):
-    labels = []
+    _labels = []
     for file in files:
         if '\\NG\\' in file:
-            labels.append(0)
+            _labels.append(0)
         else:
-            labels.append(1)
-    return labels
+            _labels.append(1)
+    return _labels
 
 
 class CustomDataset(Dataset):
-    def __init__(self, files, labels, augmentation, valid):
+    def __init__(self, files, _labels, augmentation, valid):
         self.files = files
-        self.labels = labels
+        self._labels = _labels
         self.aug = augmentation
         self.valid = valid
         self.data = []
 
         for i in range(len(self.files)):
-            sample = {'img': self.files[i], 'label': labels[i]}
+            sample = {'img': self.files[i], 'label': _labels[i]}
             self.data.append(sample)
 
     def __len__(self):
